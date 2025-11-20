@@ -4,144 +4,82 @@ using Microsoft.EntityFrameworkCore;
 using Todo_list.Data;
 using Todo_list.DTO;
 using Todo_list.Models;
-using Todo_list.Data;
-using Todo_list.DTO;
-using Todo_list.Models;
+using Todo_list.Services;
 
 [ApiController]
 [Route("api/[controller]")]
 public class TodoListsController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly ITodoService _todoService;
 
-    public TodoListsController(AppDbContext context)
+    /// <summary>
+    /// Конструктор контроллера
+    /// </summary>
+    public TodoListsController(ITodoService todoService)
     {
-        _context = context;
+        _todoService = todoService;
     }
 
-   [HttpGet]
+    /// <summary>
+    /// Получить все списки дел
+    /// </summary>
+    [HttpGet]
     public async Task<ActionResult<IEnumerable<TodoListDTO>>> GetTodoLists()
     {
-        var lists = await _context.TodoLists
-            .Include(tl => tl.Items)
-            .Select(tl => new TodoListDTO
-            {
-                Id = tl.Id,
-                Title = tl.Title,
-                ItemCount = tl.Items.Count,
-                CompletedCount = tl.Items.Count(i => i.IsCompleted)
-            })
-            .ToListAsync();
-
+        var lists = await _todoService.GetAllListsAsync();
         return Ok(lists);
     }
 
+    /// <summary>
+    /// Получить список дел по ID
+    /// </summary>
     [HttpGet("{id}")]
     public async Task<ActionResult<TodoListDetailDTO>> GetTodoList(int id)
     {
-        var todoList = await _context.TodoLists
-            .Include(tl => tl.Items)
-            .FirstOrDefaultAsync(tl => tl.Id == id);
-
-        if (todoList == null)
-        {
-            return NotFound();
-        }
-
-        var todoListDTO = new TodoListDetailDTO
-        {
-            Id = todoList.Id,
-            Title = todoList.Title,
-            Items = todoList.Items.Select(item => new TodoItemDTO
-            {
-                Id = item.Id,
-                Title = item.Title,
-                Description = item.Description,
-                IsCompleted = item.IsCompleted,
-                CreatedAt = item.CreatedAt,
-                DueDate = item.DueDate,
-                TodoListId = item.TodoListId,
-                TodoListTitle = todoList.Title
-            }).ToList()
-        };
-
-        return todoListDTO;
+        var list = await _todoService.GetListByIdAsync(id);
+        if (list == null) return NotFound();
+        return Ok(list);
     }
 
+    /// <summary>
+    /// Создать новый список дел
+    /// </summary>
     [HttpPost]
-    public async Task<ActionResult<TodoListDTO>> PostTodoList(TodoListDTO todoListDTO)
+    public async Task<ActionResult<TodoListDTO>> PostTodoList(CreateTodoListDTO createDto)
     {
-        var todoList = new TodoList
-        {
-            Title = todoListDTO.Title
-        };
-
-        _context.TodoLists.Add(todoList);
-        await _context.SaveChangesAsync();
-
-        var resultDTO = new TodoListDTO
-        {
-            Id = todoList.Id,
-            Title = todoList.Title,
-            ItemCount = 0,
-            CompletedCount = 0
-        };
-
-        return CreatedAtAction(nameof(GetTodoList), new { id = todoList.Id }, resultDTO);
+        var list = await _todoService.CreateListAsync(createDto);
+        return CreatedAtAction(nameof(GetTodoList), new { id = list.Id }, list);
     }
 
+    /// <summary>
+    /// Обновить список дел
+    /// </summary>
     [HttpPut("{id}")]
-    public async Task<IActionResult> PutTodoList(int id, TodoListDTO todoListDTO)
+    public async Task<IActionResult> PutTodoList(int id, UpdateTodoListDTO updateDto)
     {
-        if (id != todoListDTO.Id)
-        {
-            return BadRequest();
-        }
-
-        var todoList = await _context.TodoLists.FindAsync(id);
-        if (todoList == null)
-        {
-            return NotFound();
-        }
-
-        todoList.Title = todoListDTO.Title;
-
-        try
-        {
-            await _context.SaveChangesAsync();
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            if (!TodoListExists(id))
-            {
-                return NotFound();
-            }
-            else
-            {
-                throw;
-            }
-        }
-
+        var result = await _todoService.UpdateListAsync(id, updateDto);
+        if (!result) return NotFound();
         return NoContent();
     }
 
+    /// <summary>
+    /// Удалить список дел
+    /// </summary>
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteTodoList(int id)
     {
-        var todoList = await _context.TodoLists.FindAsync(id);
-        if (todoList == null)
-        {
-            return NotFound();
-        }
-
-        _context.TodoLists.Remove(todoList);
-        await _context.SaveChangesAsync();
-
+        var result = await _todoService.DeleteListAsync(id);
+        if (!result) return NotFound();
         return NoContent();
     }
 
-    private bool TodoListExists(int id)
+    /// <summary>
+    /// Получить статистику по спискам дел
+    /// </summary>
+    [HttpGet("statistics")]
+    public async Task<ActionResult<object>> GetStatistics()
     {
-        return _context.TodoLists.Any(e => e.Id == id);
+        var statistics = await _todoService.GetStatisticsAsync();
+        return Ok(statistics);
     }
 } 
