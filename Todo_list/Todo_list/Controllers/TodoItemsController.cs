@@ -1,123 +1,141 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using Todo_list.Data;
-using Todo_list.DTO;
 using Todo_list.Models;
-using Todo_list.Services;
-namespace Todo_list.Controllers;
 
-[ApiController]
-[Route("api/[controller]")]
-public class TodoItemsController : ControllerBase
+namespace Todo_list.Controllers
 {
-    private readonly ITodoItemService _todoItemService;
-
-    /// <summary>
-    /// Конструктор контроллера задач
-    /// </summary>
-    public TodoItemsController(ITodoItemService todoItemService)
+    [ApiController]
+    [Route("api/[controller]")]
+    [Authorize] // Требуем авторизацию для всех методов
+    public class TodoListController : ControllerBase
     {
-        _todoItemService = todoItemService;
-    }
+        private readonly AppDbContext _context;
+        private readonly ILogger<TodoListController> _logger;
 
-    /// <summary>
-    /// Получить все задачи
-    /// </summary>
-    [HttpGet]
-    public async Task<ActionResult<IEnumerable<TodoItemDTO>>> GetTodoItems()
-    {
-        var items = await _todoItemService.GetAllItemsAsync();
-        return Ok(items);
-    }
-
-    /// <summary>
-    /// Получить задачу по ID
-    /// </summary>
-    [HttpGet("{id}")]
-    public async Task<ActionResult<TodoItemDTO>> GetTodoItem(int id)
-    {
-        var item = await _todoItemService.GetItemByIdAsync(id);
-        if (item == null) return NotFound();
-        return Ok(item);
-    }
-
-    /// <summary>
-    /// Получить задачи по ID списка
-    /// </summary>
-    [HttpGet("by-list/{listId}")]
-    public async Task<ActionResult<IEnumerable<TodoItemDTO>>> GetTodoItemsByList(int listId)
-    {
-        var items = await _todoItemService.GetItemsByListIdAsync(listId);
-        return Ok(items);
-    }
-
-    /// <summary>
-    /// Получить просроченные задачи
-    /// </summary>
-    [HttpGet("overdue")]
-    public async Task<ActionResult<IEnumerable<TodoItemDTO>>> GetOverdueItems()
-    {
-        var items = await _todoItemService.GetOverdueItemsAsync();
-        return Ok(items);
-    }
-
-    /// <summary>
-    /// Получить задачи на сегодня
-    /// </summary>
-    [HttpGet("today")]
-    public async Task<ActionResult<IEnumerable<TodoItemDTO>>> GetTodayItems()
-    {
-        var items = await _todoItemService.GetTodayItemsAsync();
-        return Ok(items);
-    }
-
-    /// <summary>
-    /// Создать новую задачу
-    /// </summary>
-    [HttpPost]
-    public async Task<ActionResult<TodoItemDTO>> PostTodoItem(CreateTodoItemDTO createDto)
-    {
-        try
+        public TodoListController(AppDbContext context, ILogger<TodoListController> logger)
         {
-            var item = await _todoItemService.CreateItemAsync(createDto);
-            return CreatedAtAction(nameof(GetTodoItem), new { id = item.Id }, item);
+            _context = context;
+            _logger = logger;
         }
-        catch (ArgumentException ex)
+
+        // Вспомогательный метод для получения ID текущего пользователя
+        private int GetCurrentUserId()
         {
-            return BadRequest(ex.Message);
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userId))
+                throw new UnauthorizedAccessException("User not authenticated");
+
+            return int.Parse(userId);
         }
-    }
 
-    /// <summary>
-    /// Обновить задачу
-    /// </summary>
-    [HttpPut("{id}")]
-    public async Task<IActionResult> PutTodoItem(int id, UpdateTodoItemDTO updateDto)
-    {
-        var result = await _todoItemService.UpdateItemAsync(id, updateDto);
-        if (!result) return NotFound();
-        return NoContent();
-    }
+        /// <summary>
+        /// Получить все списки задач текущего пользователя
+        /// </summary>
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<TodoList>>> GetTodoLists()
+        {
+            var userId = GetCurrentUserId();
 
-    /// <summary>
-    /// Переключить статус выполнения задачи
-    /// </summary>
-    [HttpPatch("{id}/toggle")]
-    public async Task<IActionResult> ToggleTodoItem(int id)
-    {
-        var result = await _todoItemService.ToggleItemCompletionAsync(id);
-        if (!result) return NotFound();
-        return NoContent();
-    }
+            var todoLists = await _context.TodoLists
+                .Where(tl => tl.UserId == userId)
+                .Include(tl => tl.Items)
+                .ToListAsync();
 
-    /// <summary>
-    /// Удалить задачу
-    /// </summary>
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteTodoItem(int id)
-    {
-        var result = await _todoItemService.DeleteItemAsync(id);
-        if (!result) return NotFound();
-        return NoContent();
+            _logger.LogInformation("User {UserId} retrieved {Count} todo lists", userId, todoLists.Count);
+
+            return Ok(todoLists);
+        }
+
+        /// <summary>
+        /// Получить конкретный список задач по ID
+        /// </summary>
+        [HttpGet("{id}")]
+        public async Task<ActionResult<TodoList>> GetTodoList(int id)
+        {
+            var userId = GetCurrentUserId();
+
+            var todoList = await _context.TodoLists
+                .Include(tl => tl.Items)
+                .FirstOrDefaultAsync(tl => tl.Id == id && tl.UserId == userId);
+
+            if (todoList == null)
+            {
+                _logger.LogWarning("User {UserId} attempted to access non-existent todo list {TodoListId}", userId, id);
+                return NotFound(new { error = "Todo list not found" });
+            }
+
+            return Ok(todoList);
+        }
+
+        /// <summary>
+        /// Создать новый список задач
+        /// </summary>
+        [HttpPost]
+        public async Task<ActionResult<TodoList>> CreateTodoList([FromBody] TodoList todoList)
+        {
+            var userId = GetCurrentUserId();
+
+            if (!ModelState.IsValid)
+                return BadRequest(new { error = "Invalid todo list data" });
+
+            // Привязываем список к текущему пользователю
+            todoList.UserId = userId;
+
+            _context.TodoLists.Add(todoList);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("User {UserId} created new todo list {TodoListId}", userId, todoList.Id);
+
+            return CreatedAtAction(nameof(GetTodoList), new { id = todoList.Id }, todoList);
+        }
+
+        /// <summary>
+        /// Обновить список задач
+        /// </summary>
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateTodoList(int id, [FromBody] TodoList updatedTodoList)
+        {
+            var userId = GetCurrentUserId();
+
+            var existingTodoList = await _context.TodoLists
+                .FirstOrDefaultAsync(tl => tl.Id == id && tl.UserId == userId);
+
+            if (existingTodoList == null)
+                return NotFound(new { error = "Todo list not found" });
+
+            existingTodoList.Title = updatedTodoList.Title;
+            // Обновляем другие свойства по необходимости
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("User {UserId} updated todo list {TodoListId}", userId, id);
+
+            return NoContent();
+        }
+
+        /// <summary>
+        /// Удалить список задач
+        /// </summary>
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteTodoList(int id)
+        {
+            var userId = GetCurrentUserId();
+
+            var todoList = await _context.TodoLists
+                .FirstOrDefaultAsync(tl => tl.Id == id && tl.UserId == userId);
+
+            if (todoList == null)
+                return NotFound(new { error = "Todo list not found" });
+
+            _context.TodoLists.Remove(todoList);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("User {UserId} deleted todo list {TodoListId}", userId, id);
+
+            return NoContent();
+        }
     }
 }
